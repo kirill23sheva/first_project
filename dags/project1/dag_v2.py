@@ -4,7 +4,7 @@ from airflow.hooks.postgres_hook import PostgresHook
 import yfinance as yf
 from datetime import datetime
 import pandas as pd
-from psycopg2.extras import execute_values
+import psycopg2
 import logging
 
 # сделать загрузку данных из yfinance в postgres 
@@ -13,14 +13,18 @@ logger = logging.getLogger(__name__)
 
 def download_data(**context):
     
-    start_date = context['ds']
+    start_date = context['logical_date']
+
+    if start_date.weekday() >= 5:
+        print(f"{start_date} - выходной нет торгов")
+        return
     
     logger.info(f"Загрузка данных c yfinance за: {start_date}")
     
     data = yf.download("AAPL", start=start_date, period='1d', progress=False)
     data.columns = data.columns.droplevel(1)
     data = data.reset_index()
-    data_to_pg = data.to_records(index=False).tolist()
+    data_to_pg = data.to_numpy().tolist()
 
     logger.info(f"Загружено {len(data)} строк данных")
 
@@ -29,32 +33,16 @@ def download_data(**context):
     conn = hook.get_conn()
 
     cursor = conn.cursor()
-
-    cursor.execute("CREATE SCHEMA IF NOT EXISTS ks23")
-
-    create_table_query = """
-    CREATE TABLE IF NOT EXISTS ks23.aapl_stock_prices_v2 (
-        id SERIAL PRIMARY KEY,
-        date DATE NOT NULL,
-        close FLOAT,
-        high FLOAT,
-        low FLOAT,
-        open FLOAT,
-        volume BIGINT
-    )
-    """
-    cursor.execute(create_table_query)
         
-    insert_query = """
-    INSERT INTO ks23.aapl_stock_prices_v2 (date, close, high, low, open, volume)
-    VALUES %s
-    """
-
-    execute_values(cursor, insert_query, data_to_pg)
+    cursor.executemany("""
+    INSERT INTO ks23.aapl_stock_prices (date, close, high, low, open, volume)
+    VALUES (%s, %s, %s, %s, %s, %s)
+    """,
+    data_to_pg)
 
     conn.commit()
 
-    logger.info(f"✅ Успешно загружено в posgres {len(data_to_pg)} строк")
+    logger.info(f"Успешно загружено в posgres {len(data_to_pg)} строк")
 
     cursor.close()
     conn.close()
